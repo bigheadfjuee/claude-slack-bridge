@@ -1,0 +1,55 @@
+{
+  "name": "claude-slack-bridge",
+  "version": "0.1.0",
+  "description": "Bridge Slack into Claude Code - a pure Slack remote control surface for the Claude Code agent",
+  "type": "module",
+  "bin": {
+    "claude-slack-bridge": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check src/ tests/",
+    "lint:fix": "biome check --fix src/ tests/",
+    "start": "node dist/index.js",
+    "dev": "node --experimental-strip-types src/index.ts"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "slack",
+    "bridge",
+    "bot",
+    "remote",
+    "chat",
+    "messaging",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.293",
+    "@slack/bolt": "^5.1.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/node": "^24.0.0",
+    "fast-check": "^4.5.3",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
