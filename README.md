@@ -76,7 +76,7 @@ architecture is documented in [`docs/architecture.md`](docs/architecture.md).
 ```bash
 git clone https://github.com/bigheadfjuee/claude-slack-bridge.git
 cd claude-slack-bridge
-npm install
+pnpm install
 cp .env.example .env      # then edit .env
 ```
 
@@ -103,9 +103,9 @@ claude --version
 ### 4. Run it
 
 ```bash
-npm run build && npm start
+pnpm build && pnpm start
 # or, for a quick spin without a build step:
-npm run dev
+pnpm dev
 ```
 
 Then message the bot in Slack (mention it in a channel, or DM it).
@@ -237,10 +237,10 @@ sending a prompt.
 ## Development
 
 ```bash
-npm test          # vitest, single run
-npm run test:watch
-npm run lint      # biome
-npm run typecheck # tsc --noEmit
+pnpm test          # vitest, single run
+pnpm test:watch
+pnpm lint      # biome
+pnpm typecheck # tsc --noEmit
 ```
 
 The project is built test-first: every module has a test that was written to
