@@ -34,6 +34,20 @@ function stripMention(text: string): string {
 }
 
 /**
+ * Unwrap Slack inline formatting from an argument. Copying an id out of a
+ * code span (`/sessions` renders them that way) pastes it back with the
+ * backticks, so `` `6e72d0a1` `` must still mean `6e72d0a1`.
+ */
+function unwrapFormatting(arg: string): string {
+  let current = arg;
+  for (;;) {
+    const match = /^([`*_~])(.+)\1$/s.exec(current);
+    if (match?.[2] === undefined) return current;
+    current = match[2];
+  }
+}
+
+/**
  * Parse a Slack message as a command.
  *
  * Returns null when the message is ordinary chat, or when the leading token
@@ -53,7 +67,10 @@ export function parseCommand(text: string): ParsedCommand | null {
 
   return {
     name: token.slice(1).toLowerCase(),
-    args: rest.split(/\s+/).filter((a) => a.length > 0),
+    args: rest
+      .split(/\s+/)
+      .map(unwrapFormatting)
+      .filter((a) => a.length > 0),
   };
 }
 

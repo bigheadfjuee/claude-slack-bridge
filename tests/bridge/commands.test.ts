@@ -14,6 +14,15 @@ describe("parseCommand", () => {
     expect(parseCommand("/model opus")).toEqual({ name: "model", args: ["opus"] });
   });
 
+  it("unwraps Slack inline formatting pasted around arguments", () => {
+    expect(parseCommand("/resume `6e72d0a1`")).toEqual({ name: "resume", args: ["6e72d0a1"] });
+    expect(parseCommand("/resume *`6e72d0a1`* --fork")).toEqual({
+      name: "resume",
+      args: ["6e72d0a1", "--fork"],
+    });
+    expect(parseCommand("/cwd `/tmp/a`")).toEqual({ name: "cwd", args: ["/tmp/a"] });
+  });
+
   it("splits arguments on whitespace and drops empties", () => {
     expect(parseCommand("/cwd   /tmp   x ")).toEqual({ name: "cwd", args: ["/tmp", "x"] });
   });
