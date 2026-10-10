@@ -7,7 +7,8 @@
  * mapping can be unit-tested without spawning an agent.
  */
 
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, listSessions, query, type SDKSessionInfo } from "@anthropic-ai/claude-agent-sdk";
+import type { SessionCatalog, StoredSessionInfo } from "../types/index.js";
 import type {
   ClaudeSessionOptions,
   PermissionHandler,
@@ -26,7 +27,10 @@ export function buildQueryOptions(
     includePartialMessages: true,
   };
   if (spec.model !== undefined) options.model = spec.model;
-  if (spec.resume !== undefined) options.resume = spec.resume;
+  if (spec.resume !== undefined) {
+    options.resume = spec.resume;
+    if (spec.forkSession === true) options.forkSession = true;
+  }
   if (spec.extraArgs !== undefined) options.extraArgs = spec.extraArgs;
   if (canUseTool !== undefined) options.canUseTool = canUseTool;
   return options;
@@ -64,5 +68,30 @@ export function createQueryFactory(): (
       setModel: (model) => q.setModel(model as never),
       close: () => q.close(),
     };
+  };
+}
+
+function toStoredSession(info: SDKSessionInfo): StoredSessionInfo {
+  return {
+    sessionId: info.sessionId,
+    summary: info.customTitle ?? info.summary,
+    lastModified: info.lastModified,
+    cwd: info.cwd,
+    gitBranch: info.gitBranch,
+  };
+}
+
+/**
+ * The real session catalog: the transcripts the CLI and the SDK both write
+ * under `~/.claude/projects`, which is what lets either side pick up the other.
+ */
+export function createSessionCatalog(): SessionCatalog {
+  return {
+    list: async ({ dir, limit }) =>
+      (await listSessions({ ...(dir === undefined ? {} : { dir }), limit })).map(toStoredSession),
+    get: async (sessionId) => {
+      const info = await getSessionInfo(sessionId);
+      return info === undefined ? undefined : toStoredSession(info);
+    },
   };
 }

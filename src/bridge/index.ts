@@ -31,16 +31,22 @@ import {
 import { SessionLock } from "../session/lock.js";
 import { SessionManager, type SessionSpec } from "../session/manager.js";
 import { conversationKey, parseConversationKey } from "../session/routing.js";
+import { MemoryThreadStore, type ThreadStore } from "../session/threads.js";
 import {
   ACTION_ALWAYS,
   ACTION_DENY,
   approvalBlocks,
   helpBlocks,
   resolvedApprovalBlocks,
-  sessionListBlocks,
+  storedSessionListBlocks,
 } from "../slack/blocks.js";
 import { TurnTranscript } from "../slack/renderer.js";
-import type { PermissionDecision, PermissionMode } from "../types/index.js";
+import type {
+  PermissionDecision,
+  PermissionMode,
+  SessionCatalog,
+  StoredSessionInfo,
+} from "../types/index.js";
 import { type ParsedCommand, parseCommand } from "./commands.js";
 
 /** The Slack operations the bridge performs. */
@@ -71,6 +77,10 @@ export interface BridgeDeps {
     spec: SessionSpec,
     permissions: PermissionHandler,
   ) => ClaudeSession;
+  /** Claude sessions saved on disk, for `/sessions` and `/resume`. */
+  catalog?: SessionCatalog;
+  /** Which Claude session each thread last used, kept across restarts. */
+  threads?: ThreadStore;
   workdir: string;
   model?: string;
   permissionMode?: PermissionMode;
@@ -109,6 +119,19 @@ interface TurnHandle {
 }
 
 const DEFAULT_EDIT_INTERVAL_MS = 1200;
+const SESSION_LIST_LIMIT = 15;
+/** How far back a short id prefix is searched. */
+const PREFIX_SEARCH_LIMIT = 500;
+const EMPTY_CATALOG: SessionCatalog = {
+  list: async () => [],
+  get: async () => undefined,
+};
+
+interface Override {
+  cwd?: string;
+  resume?: string;
+  forkSession?: boolean;
+}
 const PERMISSION_MODES: readonly PermissionMode[] = [
   "default",
   "acceptEdits",
@@ -129,7 +152,9 @@ export class Bridge {
   /** Slack ts of each approval card, so we can edit it when it is settled. */
   private readonly approvalMessages = new Map<string, string>();
   /** Options to apply the next time a conversation's session is created. */
-  private readonly overrides = new Map<string, { cwd?: string; resume?: string }>();
+  private readonly overrides = new Map<string, Override>();
+  private readonly catalog: SessionCatalog;
+  private readonly threads: ThreadStore;
 
   constructor(deps: BridgeDeps) {
     this.deps = deps;
@@ -137,6 +162,8 @@ export class Bridge {
     this.approvals = deps.approvals;
     this.now = deps.now ?? Date.now;
     this.editIntervalMs = deps.editIntervalMs ?? DEFAULT_EDIT_INTERVAL_MS;
+    this.catalog = deps.catalog ?? EMPTY_CATALOG;
+    this.threads = deps.threads ?? new MemoryThreadStore();
     this.sessions = new SessionManager({
       maxSessions: deps.maxSessions ?? 8,
       now: this.now,
@@ -264,7 +291,11 @@ export class Bridge {
     this.sessions.markWorking(ctx.key);
     let handle: TurnHandle | undefined;
     try {
-      const session = this.sessions.getOrCreate(ctx.key, this.specFor(ctx.key));
+      // Only work out a spec when a session must actually be spawned: it
+      // consumes the thread's pending override and may touch the disk.
+      const existing = this.sessions.get(ctx.key)?.session;
+      const session =
+        existing ?? this.sessions.getOrCreate(ctx.key, await this.specFor(ctx.key));
       handle = {
         channel: ctx.channel,
         threadTs: ctx.threadTs,
@@ -306,7 +337,7 @@ export class Bridge {
   ): Promise<void> {
     switch (event.type) {
       case "init":
-        this.sessions.recordSessionId(key, event.sessionId);
+        this.bindSession(key, event.sessionId);
         return;
       case "text":
         handle.transcript.apply(event);
@@ -371,15 +402,76 @@ export class Bridge {
     handle.lastEditAt = this.now();
   }
 
-  private specFor(key: string): SessionSpec {
-    const override = this.overrides.get(key);
-    this.overrides.delete(key);
-    return {
-      cwd: override?.cwd ?? this.deps.workdir,
+  /**
+   * Decide how a conversation's session is spawned.
+   *
+   * An explicit `/resume` or `/cwd` wins. Failing that, a thread that has
+   * talked to Claude before — before a restart, or before a `/handoff` to the
+   * CLI — resumes the session it was bound to, provided the transcript still
+   * exists; a binding to a deleted session is dropped so the thread is not
+   * wedged on a resume that can never succeed.
+   */
+  private async specFor(key: string): Promise<SessionSpec> {
+    const base = {
       model: this.deps.model,
       permissionMode: this.deps.permissionMode ?? "default",
-      resume: override?.resume,
-    };
+    } as const;
+
+    const override = this.overrides.get(key);
+    this.overrides.delete(key);
+    if (override !== undefined) {
+      return {
+        ...base,
+        cwd: override.cwd ?? this.deps.workdir,
+        resume: override.resume,
+        forkSession: override.forkSession,
+      };
+    }
+
+    const binding = this.threads.get(key);
+    if (binding !== undefined) {
+      const info = await this.catalog.get(binding.sessionId).catch(() => undefined);
+      if (info !== undefined) {
+        return { ...base, cwd: info.cwd ?? binding.cwd, resume: binding.sessionId };
+      }
+      this.threads.delete(key);
+    }
+
+    return { ...base, cwd: this.deps.workdir };
+  }
+
+  /** Remember the Claude session a thread is talking to, in memory and on disk. */
+  private bindSession(key: string, sessionId: string): void {
+    this.sessions.recordSessionId(key, sessionId);
+    const record = this.sessions.get(key);
+    if (record === undefined) return;
+    this.threads.set(key, { sessionId, cwd: record.cwd, updatedAt: this.now() });
+  }
+
+  /** The thread key that has `sessionId` open right now, if any. */
+  private liveOwner(sessionId: string): string | undefined {
+    for (const summary of this.sessions.list()) {
+      if (this.sessions.get(summary.key)?.claudeSessionId === sessionId) return summary.key;
+    }
+    return undefined;
+  }
+
+  /** Find a stored session by full id or unambiguous prefix. */
+  private async findStoredSession(
+    idOrPrefix: string,
+  ): Promise<{ match?: StoredSessionInfo; candidates: StoredSessionInfo[] }> {
+    const exact = await this.catalog.get(idOrPrefix).catch(() => undefined);
+    if (exact !== undefined) return { match: exact, candidates: [exact] };
+    const candidates = (await this.catalog.list({ limit: PREFIX_SEARCH_LIMIT })).filter((info) =>
+      info.sessionId.startsWith(idOrPrefix),
+    );
+    return { match: candidates.length === 1 ? candidates[0] : undefined, candidates };
+  }
+
+  /** Drop a thread's live session and everything waiting on it. */
+  private detach(key: string): void {
+    this.approvals.cancelAll(key);
+    this.sessions.remove(key);
   }
 
   // ------------------------------------------------------------- permissions
@@ -449,6 +541,9 @@ export class Bridge {
             `*mode:* \`${record.permissionMode ?? "default"}\``,
             `*status:* ${record.status}`,
             record.claudeSessionId === undefined ? "" : `*session:* \`${record.claudeSessionId}\``,
+            record.claudeSessionId === undefined
+              ? ""
+              : `*continue in CLI:* \`/handoff\`, then \`${resumeCommand(record.cwd, record.claudeSessionId)}\``,
           ]
             .filter((line) => line !== "")
             .join("\n"),
@@ -468,20 +563,35 @@ export class Bridge {
       }
 
       case "reset":
-        this.approvals.cancelAll(ctx.key);
-        this.sessions.remove(ctx.key);
+        this.detach(ctx.key);
+        this.threads.delete(ctx.key);
         await this.say(ctx, "Forgot this thread's session. The next message starts fresh.");
         return;
 
       case "new":
-        this.approvals.cancelAll(ctx.key);
-        this.sessions.remove(ctx.key);
+        this.detach(ctx.key);
+        this.threads.delete(ctx.key);
         await this.say(ctx, "Fresh session ready — send your next message to start it.");
         return;
 
-      case "sessions":
-        await this.reply(ctx, "Claude sessions", sessionListBlocks(this.sessions.list()));
+      case "sessions": {
+        const dir = command.args[0];
+        let stored: StoredSessionInfo[];
+        try {
+          stored = await this.catalog.list({ dir, limit: SESSION_LIST_LIMIT });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await this.say(ctx, `:warning: Could not list Claude sessions: ${message}`);
+          return;
+        }
+        const live = new Map<string, string>();
+        for (const summary of this.sessions.list()) {
+          const id = this.sessions.get(summary.key)?.claudeSessionId;
+          if (id !== undefined) live.set(id, summary.key);
+        }
+        await this.reply(ctx, "Claude sessions", storedSessionListBlocks(stored, live, ctx.key));
         return;
+      }
 
       case "whoami":
         await this.say(
@@ -535,22 +645,105 @@ export class Bridge {
           return;
         }
         this.overrides.set(ctx.key, { cwd: path });
-        this.approvals.cancelAll(ctx.key);
-        this.sessions.remove(ctx.key);
+        this.detach(ctx.key);
+        this.threads.delete(ctx.key);
         await this.say(ctx, `Working directory set to \`${path}\`. The next message starts a fresh session there.`);
         return;
       }
 
       case "resume": {
-        const id = command.args[0];
+        const fork = command.args.includes("--fork");
+        const id = command.args.find((arg) => arg !== "--fork");
         if (id === undefined) {
-          await this.say(ctx, "Usage: `/resume <session-id>`.");
+          await this.say(ctx, "Usage: `/resume <session-id|prefix> [--fork]` — see `/sessions` for ids.");
           return;
         }
-        this.overrides.set(ctx.key, { resume: id });
-        this.approvals.cancelAll(ctx.key);
-        this.sessions.remove(ctx.key);
-        await this.say(ctx, `The next message will resume Claude session \`${id}\`.`);
+        if (this.locks.isBusy(ctx.key)) {
+          await this.say(ctx, "Claude is busy in this thread — `/stop` it or wait before resuming.");
+          return;
+        }
+
+        let found: { match?: StoredSessionInfo; candidates: StoredSessionInfo[] };
+        try {
+          found = await this.findStoredSession(id);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await this.say(ctx, `:warning: Could not look up Claude sessions: ${message}`);
+          return;
+        }
+        const { match, candidates } = found;
+        if (match === undefined) {
+          await this.say(
+            ctx,
+            candidates.length === 0
+              ? `No Claude session matches \`${id}\`. Try \`/sessions\`.`
+              : `\`${id}\` matches ${candidates.length} sessions — use more characters:\n${candidates
+                  .slice(0, 10)
+                  .map((info) => `• \`${info.sessionId}\` ${info.summary}`)
+                  .join("\n")}`,
+          );
+          return;
+        }
+
+        // Two live agents appending to one transcript would interleave their
+        // turns; a fork gets its own id and is always safe.
+        const owner = this.liveOwner(match.sessionId);
+        if (!fork && owner !== undefined && owner !== ctx.key) {
+          await this.say(
+            ctx,
+            `Session \`${match.sessionId}\` is already open in another thread. Run \`/handoff\` there first, or use \`/resume ${id} --fork\`.`,
+          );
+          return;
+        }
+
+        const cwd = match.cwd ?? this.deps.workdir;
+        this.detach(ctx.key);
+        this.overrides.set(ctx.key, {
+          cwd,
+          resume: match.sessionId,
+          ...(fork ? { forkSession: true } : {}),
+        });
+        await this.say(
+          ctx,
+          [
+            fork
+              ? `:twisted_rightwards_arrows: The next message will *fork* \`${match.sessionId}\` into a new session.`
+              : `:arrow_right_hook: The next message will resume \`${match.sessionId}\`.`,
+            `*cwd:* \`${cwd}\``,
+            `*topic:* ${match.summary}`,
+            fork
+              ? ""
+              : "_If this session is still open in a terminal, exit it there first — or use `--fork`._",
+          ]
+            .filter((line) => line !== "")
+            .join("\n"),
+        );
+        return;
+      }
+
+      case "handoff": {
+        const record = this.sessions.get(ctx.key);
+        const sessionId = record?.claudeSessionId ?? this.threads.get(ctx.key)?.sessionId;
+        const cwd = record?.cwd ?? this.threads.get(ctx.key)?.cwd;
+        if (sessionId === undefined || cwd === undefined) {
+          await this.say(ctx, "This thread has no Claude session to hand off yet.");
+          return;
+        }
+        if (this.locks.isBusy(ctx.key)) {
+          await this.say(ctx, "Claude is still working in this thread — `/stop` it or wait for the turn to finish.");
+          return;
+        }
+        // Close our end so the CLI is the only writer. The thread binding is
+        // kept, so the next Slack message here resumes whatever the CLI left.
+        this.detach(ctx.key);
+        await this.say(
+          ctx,
+          [
+            ":handshake: Released this session. Continue it in a terminal with:",
+            `\`\`\`${resumeCommand(cwd, sessionId)}\`\`\``,
+            "Reply in this thread later to pick it back up here.",
+          ].join("\n"),
+        );
         return;
       }
 
@@ -625,4 +818,10 @@ export class Bridge {
       // Never let a failure to report a failure escape.
     }
   }
+}
+
+/** A shell line that reopens a session in the Claude CLI. */
+function resumeCommand(cwd: string, sessionId: string): string {
+  const quoted = /^[\w@%+=:,./-]+$/.test(cwd) ? cwd : `'${cwd.replace(/'/g, "'\\''")}'`;
+  return `cd ${quoted} && claude --resume ${sessionId}`;
 }

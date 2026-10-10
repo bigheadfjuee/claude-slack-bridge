@@ -14,12 +14,13 @@ import { App, type BlockAction, type SlackActionMiddlewareArgs } from "@slack/bo
 import { Authenticator } from "./auth/authenticator.js";
 import { FileAuthStore } from "./auth/store.js";
 import { Bridge } from "./bridge/index.js";
-import { createQueryFactory } from "./claude/query.js";
+import { createQueryFactory, createSessionCatalog } from "./claude/query.js";
 import { ClaudeSession } from "./claude/session.js";
 import { loadConfig, readConfigFile, resolveWorkdir } from "./config/index.js";
 import { ApprovalRegistry } from "./session/approvals.js";
 import { SessionLock } from "./session/lock.js";
 import type { SessionSpec } from "./session/manager.js";
+import { FileThreadStore } from "./session/threads.js";
 import { ACTION_ALLOW, ACTION_ALWAYS, ACTION_DENY } from "./slack/blocks.js";
 import { SlackClient, type SlackWebLike } from "./slack/client.js";
 
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
 
   const workdir = resolveWorkdir(config.workdir, process.env);
   const authFile = join(homedir(), ".claude-slack-bridge", "auth.json");
+  const threadsFile = join(homedir(), ".claude-slack-bridge", "threads.json");
 
   const app = new App({ token: botToken, appToken, socketMode: true });
 
@@ -87,12 +89,15 @@ async function main(): Promise<void> {
           model: spec.model,
           permissionMode: spec.permissionMode,
           resume: spec.resume,
+          forkSession: spec.forkSession,
         },
         { queryFn, permissions },
       );
       session.start();
       return session;
     },
+    catalog: createSessionCatalog(),
+    threads: new FileThreadStore(threadsFile),
     workdir,
     model: config.model,
     permissionMode: config.permissionMode,
