@@ -62,7 +62,7 @@ SDK 是唯一有提供 `canUseTool` callback 的正式管道，有了它才能�
 ```bash
 git clone https://github.com/bigheadfjuee/claude-slack-bridge.git
 cd claude-slack-bridge
-npm install
+pnpm install
 cp .env.example .env      # 然後編輯 .env
 ```
 
@@ -88,9 +88,9 @@ claude --version
 ### 4. 執行
 
 ```bash
-npm run build && npm start
+pnpm build && pnpm start
 # 或者不 build、直接快速跑起來：
-npm run dev
+pnpm dev
 ```
 
 接著在 Slack 傳訊息給 bot（在頻道裡 mention 它，或直接私訊）。
@@ -202,10 +202,10 @@ thread 改開新的 session，不會每則訊息都失敗。`/new`、`/reset`、
 ## 開發
 
 ```bash
-npm test          # vitest，執行一次
-npm run test:watch
-npm run lint      # biome
-npm run typecheck # tsc --noEmit
+pnpm test          # vitest，執行一次
+pnpm test:watch
+pnpm lint      # biome
+pnpm typecheck # tsc --noEmit
 ```
 
 本專案採測試先行：每個模組的測試都是在程式碼存在之前就寫好、並先確認會失敗。關鍵邏輯另外有
