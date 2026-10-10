@@ -48,6 +48,8 @@ export interface ClaudeSessionOptions {
   permissionMode?: PermissionMode;
   /** Session id to continue, for `claude --resume`. */
   resume?: string;
+  /** With `resume`, branch into a new session id instead of appending to the original. */
+  forkSession?: boolean;
   extraArgs?: Record<string, string | null>;
 }
 
@@ -144,7 +146,10 @@ export class ClaudeSession {
       includePartialMessages: true,
       extraArgs: this.options.extraArgs,
     };
-    if (this.options.resume !== undefined) options.resume = this.options.resume;
+    if (this.options.resume !== undefined) {
+      options.resume = this.options.resume;
+      if (this.options.forkSession === true) options.forkSession = true;
+    }
     if (this.deps.permissions !== undefined) {
       options.canUseTool = this.deps.permissions;
     }

@@ -8,6 +8,14 @@ Initial implementation.
 
 ### Added
 
+- **Session hand-over between Slack and the CLI** — `/sessions` lists every
+  saved Claude session on the machine (via the SDK's `listSessions`);
+  `/resume <id|prefix> [--fork]` continues one in its original directory, or
+  forks it; `/handoff` releases a thread's session and prints the
+  `claude --resume` command.
+- **Persistent thread bindings** — `~/.claude-slack-bridge/threads.json` maps
+  each thread to its Claude session, so threads resume after a restart or a
+  CLI hand-off.
 - **Slack remote control** for the Claude Code agent, as a standalone daemon on
   the official Claude Agent SDK.
 - **Thread-scoped sessions** — one long-lived Claude session per Slack thread;

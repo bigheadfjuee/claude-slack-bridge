@@ -105,3 +105,18 @@ export interface SessionRecord {
   lastUsedAt: number;
   turns: number;
 }
+
+/** A Claude session found on disk (`~/.claude/projects`), from either the CLI or the bridge. */
+export interface StoredSessionInfo {
+  sessionId: string;
+  summary: string;
+  lastModified: number;
+  cwd?: string;
+  gitBranch?: string;
+}
+
+/** Read-only view of the Claude sessions saved on this machine. */
+export interface SessionCatalog {
+  list(options: { dir?: string; limit: number }): Promise<StoredSessionInfo[]>;
+  get(sessionId: string): Promise<StoredSessionInfo | undefined>;
+}

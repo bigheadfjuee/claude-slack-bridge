@@ -205,6 +205,18 @@ describe("ClaudeSession — SDK options", () => {
     session.close();
   });
 
+  it("forwards forkSession when resuming as a fork", async () => {
+    const { state, factory } = makeFakeQuery([INIT]);
+    const session = new ClaudeSession(
+      { cwd: "/work", resume: "sess-old", forkSession: true },
+      { queryFn: factory },
+    );
+    session.start();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.options).toMatchObject({ resume: "sess-old", forkSession: true });
+    session.close();
+  });
+
   it("wires canUseTool so the injected handler decides tool calls", async () => {
     const seen: Array<{ name: string; input: Record<string, unknown> }> = [];
     const { state, factory } = makeFakeQuery([INIT]);

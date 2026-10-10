@@ -25,6 +25,15 @@ describe("buildQueryOptions", () => {
     expect(buildQueryOptions({ cwd: "/w" })).toMatchObject({ permissionMode: "default" });
   });
 
+  it("forwards forkSession only alongside resume", () => {
+    expect(buildQueryOptions({ cwd: "/w", resume: "s", forkSession: true })).toMatchObject({
+      resume: "s",
+      forkSession: true,
+    });
+    expect(buildQueryOptions({ cwd: "/w", forkSession: true })).not.toHaveProperty("forkSession");
+    expect(buildQueryOptions({ cwd: "/w", resume: "s" })).not.toHaveProperty("forkSession");
+  });
+
   it("omits resume when there is nothing to resume", () => {
     expect(buildQueryOptions({ cwd: "/w" })).not.toHaveProperty("resume");
   });

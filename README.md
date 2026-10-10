@@ -1,5 +1,7 @@
 # claude-slack-bridge
 
+English | [繁體中文](README.zh-TW.md)
+
 **Bridge Slack into Claude Code** — a pure Slack remote control surface for the
 [Claude Code](https://claude.com/claude-code) coding agent.
 
@@ -42,6 +44,9 @@ architecture is documented in [`docs/architecture.md`](docs/architecture.md).
 - **Interrupt** — `/stop` cancels the turn Claude is running.
 - **Session reuse** — conversations persist; `/new` starts fresh, `/resume`
   rebinds a thread to an existing session.
+- **Hand-over between Slack and the CLI** — pick up a `claude` CLI session from
+  Slack with `/resume`, or give a Slack session back to the terminal with
+  `/handoff`. Threads remember their session across bridge restarts.
 - **Access control** — a user allowlist plus a one-time challenge-code
   handshake, persisted to disk so it survives restarts.
 - **No secrets in the repo** — tokens come from the environment or a
@@ -115,8 +120,9 @@ Then message the bot in Slack (mention it in a channel, or DM it).
 | `/status` | This thread's session id, model, permission mode, and directory |
 | `/new` | Start a fresh Claude session in this thread |
 | `/stop` | Interrupt the turn Claude is currently running |
-| `/sessions` | List recent Claude sessions on this machine |
-| `/resume <id>` | Rebind this thread to an existing session |
+| `/sessions [path]` | List recent Claude sessions on this machine — CLI and Slack alike |
+| `/resume <id\|prefix> [--fork]` | Continue a saved session in this thread (in the directory it was created in) |
+| `/handoff` | Release this thread's session and print the `claude --resume` command for the CLI |
 | `/model <name>` | Switch model (`opus`, `sonnet`, `haiku`, or a full name) |
 | `/mode <mode>` | Set the permission mode (`default`, `acceptEdits`, `plan`, `dontAsk`, `bypassPermissions`) |
 | `/cwd <path>` | Change the working directory (starts a fresh session) |
@@ -125,6 +131,64 @@ Then message the bot in Slack (mention it in a channel, or DM it).
 Anything that is not a command is sent to Claude as a prompt. A message that
 merely *looks* like a command — a bare path such as `/usr/local/bin` — is
 treated as chat.
+
+---
+
+## Moving sessions between Slack and the CLI
+
+The bridge and the `claude` CLI save sessions to the same place
+(`~/.claude/projects`), so either one can pick up where the other stopped.
+
+### CLI → Slack
+
+1. In a Slack thread, run `/sessions` (or `/sessions <path>` for one project).
+   It lists every saved session on the machine, from the CLI and from Slack.
+   Each row shows the first 8 characters of the id, the topic, when it was last
+   modified, its directory and its git branch.
+2. Run `/resume <id>`. The 8-character prefix is enough. If a prefix matches
+   more than one session, the bridge lists the matches so you can pick one.
+   Your next message continues the session **in the directory it was created
+   in**.
+3. To leave the original untouched, run `/resume <id> --fork`. The session is
+   copied into a new id and continued there. Use this when the CLI still has
+   the session open.
+
+### Slack → CLI
+
+1. Run `/handoff` in the thread. The bridge closes its side of the session and
+   replies with a ready-to-paste command:
+   ```bash
+   cd <dir> && claude --resume <id>
+   ```
+2. Run it in a terminal and keep working.
+3. When you reply in the Slack thread later, the bridge resumes the session,
+   including anything you did in the CLI.
+
+`/status` also shows the `claude --resume` command for the thread's session.
+
+### Threads survive restarts
+
+Each thread's session is saved in `~/.claude-slack-bridge/threads.json`, so a
+restarted bridge resumes old threads instead of starting from scratch. If the
+saved session's transcript has been deleted, the binding is dropped and the
+thread starts a new session instead of failing on every message. `/new`,
+`/reset` and `/cwd` clear the binding.
+
+### Safeguards
+
+- `/resume` refuses a session that is already open in another Slack thread.
+  Run `/handoff` in that thread first, or use `--fork`.
+- `/handoff` and `/resume` are refused while Claude is running a turn in the
+  thread. Wait for it to finish, or `/stop` it.
+- Running `/cwd` and then `/resume` keeps the resumed session's own directory.
+
+### Caveats
+
+- **Don't write to one session from two places at once.** Exit the CLI before
+  running `/resume` without `--fork`. The bridge cannot tell whether a terminal
+  still has the session open, so it can only remind you.
+- If your CLI version gives a resumed session a new id, the thread won't find
+  it automatically. Run `/resume <new id>` in the thread to reconnect.
 
 ---
 

@@ -26,6 +26,7 @@ export interface SessionSpec {
   model?: string;
   permissionMode?: PermissionMode;
   resume?: string;
+  forkSession?: boolean;
 }
 
 export interface ManagedSession {

@@ -4,7 +4,13 @@ import { Bridge, type BridgeDeps, type SlackLike } from "../../src/bridge/index.
 import type { ClaudeSession, PermissionHandler } from "../../src/claude/session.js";
 import { ApprovalRegistry } from "../../src/session/approvals.js";
 import { SessionLock } from "../../src/session/lock.js";
-import type { PermissionDecision, SessionEvent } from "../../src/types/index.js";
+import { MemoryThreadStore, type ThreadStore } from "../../src/session/threads.js";
+import type {
+  PermissionDecision,
+  SessionCatalog,
+  SessionEvent,
+  StoredSessionInfo,
+} from "../../src/types/index.js";
 
 /** A push-driven async iterable, standing in for a session's event stream. */
 function stream<T>() {
@@ -66,6 +72,8 @@ function makeHarness(
     editIntervalMs?: number;
     now?: () => number;
     createSession?: BridgeDeps["createSession"];
+    stored?: StoredSessionInfo[];
+    threads?: ThreadStore;
   } = {},
 ) {
   const calls = {
@@ -139,8 +147,17 @@ function makeHarness(
     now,
   });
 
+  const stored = over.stored ?? [];
+  const catalog: SessionCatalog = {
+    list: vi.fn(async ({ limit }: { dir?: string; limit: number }) => stored.slice(0, limit)),
+    get: vi.fn(async (id: string) => stored.find((info) => info.sessionId === id)),
+  };
+  const threads = over.threads ?? new MemoryThreadStore();
+
   const deps: BridgeDeps = {
     slack,
+    catalog,
+    threads,
     auth,
     approvals: new ApprovalRegistry(),
     locks: new SessionLock(),
@@ -166,6 +183,8 @@ function makeHarness(
   return {
     bridge,
     deps,
+    catalog,
+    threads,
     calls,
     created,
     byKey,
@@ -441,14 +460,18 @@ describe("Bridge — commands", () => {
     expect(h.created[0]?.closed).toBe(true);
   });
 
-  it("/sessions lists the live sessions", async () => {
-    const h = makeHarness();
-    const p = h.bridge.handleMessage(msg());
-    await h.flush();
-    await h.emit(KEY, { type: "result", sessionId: "s", isError: false, result: "" });
-    await p;
-    await h.bridge.handleMessage(msg({ text: "/sessions" }));
-    expect(JSON.stringify(h.last("postMessage")?.blocks ?? [])).toContain("/work");
+  it("/sessions lists the Claude sessions saved on disk", async () => {
+    const h = makeHarness({
+      stored: [
+        { sessionId: "abcdef12-0000-0000-0000-000000000000", summary: "fix login", lastModified: 0, cwd: "/repo" },
+      ],
+    });
+    await h.bridge.handleMessage(msg({ text: "/sessions /repo" }));
+    expect(h.catalog.list).toHaveBeenCalledWith({ dir: "/repo", limit: 15 });
+    const blocks = JSON.stringify(h.last("postMessage")?.blocks ?? []);
+    expect(blocks).toContain("abcdef12");
+    expect(blocks).toContain("fix login");
+    expect(blocks).toContain("/repo");
   });
 
   it("/new starts a fresh session even though the thread already had one", async () => {
@@ -585,5 +608,166 @@ describe("Bridge — approvals", () => {
     await decision;
     await h.emit(KEY, { type: "result", sessionId: "s", isError: false, result: "" });
     await p;
+  });
+});
+
+const STORED_A: StoredSessionInfo = {
+  sessionId: "aaaa1111-0000-0000-0000-000000000000",
+  summary: "refactor auth",
+  lastModified: 0,
+  cwd: "/projects/app",
+};
+const STORED_B: StoredSessionInfo = {
+  sessionId: "aaaa2222-0000-0000-0000-000000000000",
+  summary: "write docs",
+  lastModified: 0,
+  cwd: "/projects/docs",
+};
+
+/** Run one full turn in the default thread. */
+async function turn(h: ReturnType<typeof makeHarness>, text = "hello claude", sessionId = "claude-1") {
+  const p = h.bridge.handleMessage(msg({ ts: `${Math.random()}`, thread_ts: "111.222", text }));
+  await h.flush();
+  await h.emit(KEY, { type: "init", sessionId, model: "m", cwd: "/x", tools: [] } as SessionEvent);
+  await h.emit(KEY, { type: "result", sessionId, isError: false, result: "" });
+  await p;
+}
+
+describe("Bridge — taking over CLI sessions", () => {
+  it("/resume resumes a CLI session in the directory it was created in", async () => {
+    const h = makeHarness({ stored: [STORED_A, STORED_B] });
+    await h.bridge.handleMessage(msg({ text: `/resume ${STORED_A.sessionId}` }));
+    await turn(h);
+    expect(h.created[0]?.spec).toMatchObject({ cwd: "/projects/app", resume: STORED_A.sessionId });
+    expect(h.created[0]?.spec.forkSession).toBeUndefined();
+  });
+
+  it("/resume accepts an unambiguous id prefix", async () => {
+    const h = makeHarness({ stored: [STORED_A, STORED_B] });
+    await h.bridge.handleMessage(msg({ text: "/resume aaaa2" }));
+    await turn(h);
+    expect(h.created[0]?.spec).toMatchObject({ cwd: "/projects/docs", resume: STORED_B.sessionId });
+  });
+
+  it("/resume refuses an ambiguous prefix and lists the candidates", async () => {
+    const h = makeHarness({ stored: [STORED_A, STORED_B] });
+    await h.bridge.handleMessage(msg({ text: "/resume aaaa" }));
+    const text = h.last("postMessage")?.text ?? "";
+    expect(text).toContain("matches 2 sessions");
+    expect(text).toContain(STORED_A.sessionId);
+    await turn(h);
+    expect(h.created[0]?.spec.resume).toBeUndefined();
+  });
+
+  it("/resume reports an unknown id", async () => {
+    const h = makeHarness({ stored: [STORED_A] });
+    await h.bridge.handleMessage(msg({ text: "/resume zzzz" }));
+    expect(h.last("postMessage")?.text ?? "").toContain("No Claude session matches");
+  });
+
+  it("/resume --fork branches the session instead of appending to it", async () => {
+    const h = makeHarness({ stored: [STORED_A] });
+    await h.bridge.handleMessage(msg({ text: "/resume aaaa1 --fork" }));
+    await turn(h, "go", "forked-id");
+    expect(h.created[0]?.spec).toMatchObject({ resume: STORED_A.sessionId, forkSession: true });
+    expect(h.threads.get(KEY)?.sessionId).toBe("forked-id");
+  });
+
+  it("/resume refuses a session open in another thread unless forked", async () => {
+    const h = makeHarness({ stored: [STORED_A] });
+    await h.bridge.handleMessage(msg({ text: `/resume ${STORED_A.sessionId}` }));
+    await turn(h, "hi", STORED_A.sessionId);
+
+    const other = { channel: "C2", ts: "900.000", user: "U_ALLOWED" };
+    await h.bridge.handleMessage({ ...other, text: `/resume ${STORED_A.sessionId}` });
+    expect(h.last("postMessage")?.text ?? "").toContain("already open in another thread");
+
+    await h.bridge.handleMessage({ ...other, text: `/resume ${STORED_A.sessionId} --fork` });
+    expect(h.last("postMessage")?.text ?? "").toContain("fork");
+  });
+
+  it("/cwd followed by /resume does not lose the resume's directory", async () => {
+    const h = makeHarness({ stored: [STORED_A] });
+    await h.bridge.handleMessage(msg({ text: "/cwd /elsewhere" }));
+    await h.bridge.handleMessage(msg({ text: "/resume aaaa1" }));
+    await turn(h);
+    expect(h.created[0]?.spec).toMatchObject({ cwd: "/projects/app", resume: STORED_A.sessionId });
+  });
+});
+
+describe("Bridge — handing sessions to the CLI", () => {
+  it("/handoff closes the live session and prints the resume command", async () => {
+    const h = makeHarness({ stored: [{ ...STORED_A, sessionId: "claude-1", cwd: "/work" }] });
+    await turn(h);
+    await h.bridge.handleMessage(msg({ text: "/handoff" }));
+    expect(h.created[0]?.closed).toBe(true);
+    expect(h.bridge.sessions.get(KEY)).toBeUndefined();
+    expect(h.last("postMessage")?.text ?? "").toContain("cd /work && claude --resume claude-1");
+  });
+
+  it("the next Slack message after /handoff resumes what the CLI left", async () => {
+    const h = makeHarness({ stored: [{ ...STORED_A, sessionId: "claude-1", cwd: "/work" }] });
+    await turn(h);
+    await h.bridge.handleMessage(msg({ text: "/handoff" }));
+    await turn(h, "back in slack", "claude-1");
+    expect(h.created).toHaveLength(2);
+    expect(h.created[1]?.spec).toMatchObject({ cwd: "/work", resume: "claude-1" });
+  });
+
+  it("/handoff refuses while a turn is running", async () => {
+    const h = makeHarness();
+    const p = h.bridge.handleMessage(msg());
+    await h.flush();
+    await h.emit(KEY, { type: "init", sessionId: "claude-1", model: "m", cwd: "/x", tools: [] } as SessionEvent);
+    await h.bridge.handleMessage(msg({ text: "/handoff", ts: "222.333", thread_ts: "111.222" }));
+    expect(h.last("postMessage")?.text ?? "").toContain("still working");
+    expect(h.created[0]?.closed).toBe(false);
+    await h.emit(KEY, { type: "result", sessionId: "claude-1", isError: false, result: "" });
+    await p;
+  });
+
+  it("/handoff with no session says so", async () => {
+    const h = makeHarness();
+    await h.bridge.handleMessage(msg({ text: "/handoff" }));
+    expect(h.last("postMessage")?.text ?? "").toContain("no Claude session");
+  });
+
+  it("/status shows how to continue in the CLI", async () => {
+    const h = makeHarness();
+    await turn(h);
+    await h.bridge.handleMessage(msg({ text: "/status" }));
+    expect(h.last("postMessage")?.text ?? "").toContain("claude --resume claude-1");
+  });
+});
+
+describe("Bridge — thread persistence", () => {
+  it("a thread resumes its session after a restart", async () => {
+    const threads = new MemoryThreadStore();
+    const stored = [{ ...STORED_A, sessionId: "claude-1", cwd: "/work" }];
+    const first = makeHarness({ threads, stored });
+    await turn(first);
+    first.bridge.stop();
+
+    const second = makeHarness({ threads, stored });
+    await turn(second, "still there?", "claude-1");
+    expect(second.created[0]?.spec).toMatchObject({ cwd: "/work", resume: "claude-1" });
+  });
+
+  it("drops a binding whose transcript no longer exists", async () => {
+    const threads = new MemoryThreadStore();
+    threads.set(KEY, { sessionId: "gone", cwd: "/work", updatedAt: 0 });
+    const h = makeHarness({ threads });
+    await turn(h);
+    expect(h.created[0]?.spec.resume).toBeUndefined();
+    expect(threads.get(KEY)?.sessionId).toBe("claude-1");
+  });
+
+  it("/new forgets the thread's binding", async () => {
+    const h = makeHarness({ stored: [{ ...STORED_A, sessionId: "claude-1", cwd: "/work" }] });
+    await turn(h);
+    await h.bridge.handleMessage(msg({ text: "/new" }));
+    expect(h.threads.get(KEY)).toBeUndefined();
+    await turn(h, "fresh", "claude-2");
+    expect(h.created[1]?.spec.resume).toBeUndefined();
   });
 });

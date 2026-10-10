@@ -6,7 +6,7 @@
  * as plain data so it can be asserted in tests without a Slack workspace.
  */
 
-import type { PendingApproval } from "../types/index.js";
+import type { PendingApproval, StoredSessionInfo } from "../types/index.js";
 import { truncate } from "./formatting.js";
 
 export const ACTION_ALLOW = "approval_allow";
@@ -112,6 +112,51 @@ export function sessionListBlocks(
   return [header("Claude sessions"), section(rows.join("\n"))];
 }
 
+function ago(ms: number, now: number): string {
+  const minutes = Math.max(0, Math.round((now - ms) / 60000));
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+/**
+ * The `/sessions` card: Claude sessions saved on this machine, from the CLI
+ * or the bridge, newest first, with the short id `/resume` accepts.
+ *
+ * `live` maps a session id to the thread that has it open right now.
+ */
+export function storedSessionListBlocks(
+  sessions: StoredSessionInfo[],
+  live: Map<string, string>,
+  currentKey: string,
+  now: number = Date.now(),
+): unknown[] {
+  if (sessions.length === 0) return [section("No saved Claude sessions found.")];
+  const rows = sessions.map((info) => {
+    const owner = live.get(info.sessionId);
+    const dot =
+      owner === undefined ? ":white_circle:" : owner === currentKey ? ":large_green_circle:" : ":large_blue_circle:";
+    const branch = info.gitBranch === undefined || info.gitBranch === "" ? "" : ` · \`${info.gitBranch}\``;
+    const where = info.cwd === undefined ? "" : ` · \`${info.cwd}\``;
+    const summary = truncate(info.summary.replace(/\s+/g, " "), 80);
+    return `${dot} \`${info.sessionId.slice(0, 8)}\` ${summary}\n      ${ago(info.lastModified, now)}${where}${branch}`;
+  });
+  return [
+    header("Claude sessions"),
+    section(rows.join("\n")),
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: ":large_green_circle: this thread · :large_blue_circle: open in another thread · `/resume <id> [--fork]` to continue one here",
+        },
+      ],
+    },
+  ];
+}
+
 /** The `/help` card. */
 export function helpBlocks(): unknown[] {
   return [
@@ -123,7 +168,9 @@ export function helpBlocks(): unknown[] {
         "• `/new [path]` — start a fresh session (optionally in another directory)",
         "• `/status` — what this thread's session is doing",
         "• `/stop` — interrupt the current turn",
-        "• `/sessions` — list every live session",
+        "• `/sessions [path]` — list saved Claude sessions (CLI and Slack)",
+        "• `/resume <id> [--fork]` — continue a saved session in this thread",
+        "• `/handoff` — release this thread's session so the CLI can `claude --resume` it",
         "• `/reset` — forget this thread's session",
         "• `/help` — this message",
       ].join("\n"),
