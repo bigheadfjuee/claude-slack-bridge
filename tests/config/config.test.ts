@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loadConfig, resolveWorkdir } from "../../src/config/index.js";
 
@@ -91,6 +92,6 @@ describe("resolveWorkdir", () => {
   });
 
   it("expands a leading tilde", () => {
-    expect(resolveWorkdir("~/work", {}, "/home/me")).toBe("/home/me/work");
+    expect(resolveWorkdir("~/work", {}, "/home/me")).toBe(join("/home/me", "work"));
   });
 });
