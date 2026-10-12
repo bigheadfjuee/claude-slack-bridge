@@ -10,7 +10,13 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { App, type BlockAction, type SlackActionMiddlewareArgs } from "@slack/bolt";
+import {
+  App,
+  type BlockAction,
+  type SlackActionMiddlewareArgs,
+  SocketModeReceiver,
+} from "@slack/bolt";
+import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 import { Authenticator } from "./auth/authenticator.js";
 import { FileAuthStore } from "./auth/store.js";
 import { Bridge } from "./bridge/index.js";
@@ -59,7 +65,12 @@ async function main(): Promise<void> {
   const authFile = join(homedir(), ".claude-slack-bridge", "auth.json");
   const threadsFile = join(homedir(), ".claude-slack-bridge", "threads.json");
 
-  const app = new App({ token: botToken, appToken, socketMode: true });
+  // 公司網路需經 proxy：Slack 套件內建的 undici 不吃 NODE_USE_ENV_PROXY，
+  // 所以手動依 HTTPS_PROXY / NO_PROXY 建 dispatcher，同時給 Web API 與 WebSocket 用。
+  const proxied = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  const dispatcher = proxied ? new EnvHttpProxyAgent({ allowH2: false }) : undefined;
+  if (dispatcher) setGlobalDispatcher(dispatcher);
+  const app = new App({ token: botToken, receiver: new SocketModeReceiver({ appToken, dispatcher }) });
 
   // The four WebClient calls we need, behind the interface the bridge expects.
   const web: SlackWebLike = {
