@@ -36,7 +36,8 @@ describe("FileThreadStore", () => {
   it("writes a versioned, owner-only file", () => {
     new FileThreadStore(path).set("C1/1", { sessionId: "s1", cwd: "/w", updatedAt: 5 });
     expect(JSON.parse(readFileSync(path, "utf8")).version).toBe(1);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    // Windows 沒有 POSIX 權限位元，mode 一律是 0o666，只在 POSIX 上驗證
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
   it("treats a corrupt file as empty and ignores malformed entries", () => {
