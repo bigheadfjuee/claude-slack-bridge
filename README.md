@@ -112,6 +112,42 @@ Then message the bot in Slack (mention it in a channel, or DM it).
 
 ---
 
+## Plugin mode: drive the CLI session you already have open
+
+Besides the standalone daemon, the bridge can run as a Claude Code **channel
+plugin**: the `claude` CLI you are using loads it, Slack messages land in that
+session, Claude answers with a `reply` tool, and tool approvals become Slack
+buttons (the terminal dialog stays live too — first answer wins).
+
+```bash
+# 1. Bundle and install (once; after code changes rebuild, then uninstall and
+#    install again — the cached copy only refreshes on a reinstall)
+pnpm build
+claude plugin marketplace add .
+claude plugin install slack-bridge@claude-slack-bridge
+
+# 2. Put the tokens in your home directory (the plugin runs in *your project's*
+#    directory and cannot see this repo's .env)
+cp .env ~/.claude-slack-bridge/.env
+
+# 3. From any project, start the session to be remote-controlled
+CLAUDE_SLACK_CHANNEL=1 claude --dangerously-load-development-channels plugin:slack-bridge@claude-slack-bridge
+```
+
+How it differs from the daemon:
+
+- One session — the CLI's — rather than one per thread, and none of the
+  `/new`, `/stop`, `/resume` commands.
+- Slack shows what Claude sends with `reply`, not a token-by-token stream.
+- Channels are a research preview: a custom channel is not on Anthropic's
+  allowlist, so `--dangerously-load-development-channels` is required and only
+  works in an interactive session.
+- A session without `CLAUDE_SLACK_CHANNEL=1` never connects to Slack — several
+  Socket Mode connections would steal each other's events, so do not run the
+  daemon and the plugin on the same tokens at once.
+
+---
+
 ## Commands
 
 | Command | What it does |

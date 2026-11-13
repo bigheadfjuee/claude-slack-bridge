@@ -22,6 +22,7 @@
  */
 
 import type { Authenticator } from "../auth/authenticator.js";
+import { challengeUser } from "../auth/challenge.js";
 import type { ClaudeSession, PermissionHandler } from "../claude/session.js";
 import {
   type ApprovalDecision,
@@ -776,24 +777,7 @@ export class Bridge {
   }
 
   private async challenge(userId: string, channel: string, text: string): Promise<void> {
-    if (text !== "" && this.deps.auth.verify(userId, text)) {
-      await this.deps.slack.postEphemeral({
-        channel,
-        user: userId,
-        text: ":white_check_mark: You're authorised — send a message to start talking to Claude.",
-      });
-      return;
-    }
-    await this.deps.slack.postEphemeral({
-      channel,
-      user: userId,
-      text: [
-        ":lock: You're not authorised to use this bridge.",
-        this.deps.auth.hasPendingChallenge(userId)
-          ? "Send the challenge code you were given to get access."
-          : "Ask the bridge operator for the challenge code, then send it here.",
-      ].join(" "),
-    });
+    await challengeUser(this.deps.auth, this.deps.slack, userId, channel, text);
   }
 
   private async reportFailure(

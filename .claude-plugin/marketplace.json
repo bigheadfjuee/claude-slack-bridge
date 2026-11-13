@@ -1,0 +1,11 @@
+{
+  "name": "claude-slack-bridge",
+  "owner": { "name": "claude-slack-bridge" },
+  "plugins": [
+    {
+      "name": "slack-bridge",
+      "source": "./plugin",
+      "description": "Slack channel for Claude Code — drive the running CLI session from Slack."
+    }
+  ]
+}

@@ -8,6 +8,10 @@ Initial implementation.
 
 ### Added
 
+- **Claude Code plugin mode** — the bridge can now run as a channel plugin
+  (`slack-bridge`) inside an already-running `claude` CLI session instead of
+  as a separate daemon: Slack messages arrive as channel events, Claude answers
+  with a `reply` tool, and tool approvals are relayed to Slack as buttons.
 - **Session hand-over between Slack and the CLI** — `/sessions` lists every
   saved Claude session on the machine (via the SDK's `listSessions`);
   `/resume <id|prefix> [--fork]` continues one in its original directory, or

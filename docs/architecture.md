@@ -1,28 +1,41 @@
 # Architecture
 
-## Why a daemon, and not an extension
+## Two modes
 
-`pi-slack-bridge` is a **pi extension**: `pi` exposes a plugin API, so the
-bridge loads *into* the agent's own process and speaks to Slack directly.
+The bridge ships two entrypoints that share the Slack, auth and formatting
+modules:
 
-Claude Code offers no such hook. It cannot be extended from outside, so the
-only two ways to drive it are:
+| | Daemon (`dist/index.js`) | Channel plugin (`dist/channel/main.js`) |
+|---|---|---|
+| Who owns the Claude session | the bridge, via the Agent SDK | the `claude` CLI you already have open |
+| Sessions | one per Slack thread | the single CLI session |
+| Tool approval | `canUseTool` → Slack card | permission relay → Slack card (also answerable in the terminal) |
+| Output in Slack | streamed, edited in place | whatever Claude sends with the `reply` tool |
+| `/stop`, `/new`, `/resume`… | yes | no — use the terminal |
 
-1. the CLI in print mode — `claude -p --input-format stream-json
-   --output-format stream-json`;
-2. the official **Claude Agent SDK**.
+### Channel plugin
 
-Both stream multi-turn conversations from a single process, and both honour
-`--resume`. They diverge on one decisive point: **tool-use approval**. In print
-mode Claude reports *"this session has no approval surface"* and
-`--permission-prompts host|none` has no effect — there is no channel over which
-a permission request can be answered. The SDK, by contrast, exposes a
-`canUseTool` callback that the host can resolve asynchronously.
+Claude Code [channels](https://code.claude.com/docs/en/channels-reference) let
+an MCP server push events into a running session. `channel/main.ts` is that
+server: Claude Code spawns it over stdio, it opens the Socket Mode connection,
+and `channel/index.ts` translates in both directions:
 
-Since *"approve the Bash command Claude wants to run, from Slack"* is the whole
-point of a remote control surface, the Agent SDK is the only viable substrate.
-That in turn means the bridge has to be a **standalone long-running daemon**
-rather than a plugin.
+```
+Slack message ──► auth gate ──► notifications/claude/channel ──► <channel> tag in the session
+Claude ──► reply tool ──► chat.postMessage (only into chats an authorised user spoke in)
+permission dialog ──► notifications/claude/channel/permission_request ──► Slack card
+button click ──► auth gate ──► notifications/claude/channel/permission {allow|deny}
+```
+
+Channels are a research preview: a channel that is not on Anthropic's allowlist
+must be loaded with `--dangerously-load-development-channels`, in an
+interactive session.
+
+### Daemon
+
+In print mode (`claude -p`) there is no approval surface, so a bridge that owns
+its own sessions has to use the **Claude Agent SDK**, whose `canUseTool`
+callback the host can resolve asynchronously. That is the daemon:
 
 ```
 Slack  ⇄  claude-slack-bridge (this daemon)  ⇄  Claude Agent SDK  ⇄  Claude Code
@@ -86,7 +99,11 @@ result ──► final edit  +  lock.release  +  manager.markIdle
 | `slack/client.ts` | The whole Slack contract — four WebClient calls behind one seam. |
 | `bridge/commands.ts` | Parses `/command` messages, narrowly, so paths are not swallowed. |
 | `bridge/index.ts` | The orchestrator: auth gate, routing, turn lifecycle, throttled edits. |
-| `index.ts` | Entrypoint: Bolt app, Socket Mode, the real `queryFn`, signal handling. |
+| `slack/app.ts` | The only Bolt import: Socket Mode app, proxy dispatcher, event wiring. |
+| `auth/challenge.ts` | The "not authorised" / challenge-code reply, shared by both modes. |
+| `index.ts` | Daemon entrypoint: the real `queryFn`, signal handling. |
+| `channel/index.ts` | `SlackChannel`: Slack ⇄ channel events, `reply` tool, permission relay. |
+| `channel/main.ts` | Plugin entrypoint: the stdio MCP server. |
 
 ## Three decisions worth knowing
 

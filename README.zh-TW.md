@@ -97,6 +97,37 @@ pnpm dev
 
 ---
 
+## Plugin 模式：遙控「已經開著的」CLI session
+
+除了獨立 daemon，本專案也能當成 Claude Code 的 **channel plugin**：由你正在用的 `claude` CLI
+把它載入，Slack 訊息直接進到那個 session，Claude 用 `reply` 工具回到 Slack，工具審核會變成 Slack 按鈕
+（終端機也能回答，先到先贏）。
+
+```powershell
+# 1. 打包並安裝（只需一次；改過程式後重跑 build，再 uninstall + install 才會更新快取）
+pnpm build
+claude plugin marketplace add .
+claude plugin install slack-bridge@claude-slack-bridge
+
+# 2. token 放到家目錄（plugin 的工作目錄是你的專案，讀不到這裡的 .env）
+Copy-Item .env $HOME\.claude-slack-bridge\.env
+
+# 3. 在任何專案目錄啟動要被遙控的 session
+$env:CLAUDE_SLACK_CHANNEL = "1"
+claude --dangerously-load-development-channels plugin:slack-bridge@claude-slack-bridge
+```
+
+與 daemon 模式的差異：
+
+- 只有一個 session（就是那個 CLI），沒有每個 thread 各一段對話，也沒有 `/new`、`/stop`、`/resume` 等指令。
+- Slack 上看到的是 Claude 用 `reply` 送出的內容，不是逐字串流。
+- Channels 是 research preview：自製 channel 不在 Anthropic 的允許清單上，所以必須帶
+  `--dangerously-load-development-channels`，而且只能用在互動式 session。
+- 沒設 `CLAUDE_SLACK_CHANNEL=1` 的 session 不會連 Slack —— Socket Mode 多條連線會互搶訊息，
+  因此同一組 token 請勿同時跑 daemon 與 plugin。
+
+---
+
 ## 指令
 
 | 指令 | 作用 |

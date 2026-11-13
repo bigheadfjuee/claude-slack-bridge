@@ -1,0 +1,12 @@
+{
+  "name": "slack-bridge",
+  "description": "Slack channel for Claude Code — drive the running CLI session from Slack, with tool approvals as Slack buttons.",
+  "version": "0.1.0",
+  "keywords": ["slack", "messaging", "channel", "mcp"],
+  "mcpServers": {
+    "slack-bridge": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server.mjs"]
+    }
+  }
+}

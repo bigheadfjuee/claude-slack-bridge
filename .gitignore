@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs
 dist/
+plugin/server.mjs
 build/
 *.tsbuildinfo
 plan/

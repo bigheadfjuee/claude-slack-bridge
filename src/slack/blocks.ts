@@ -9,6 +9,9 @@
 import type { PendingApproval, StoredSessionInfo } from "../types/index.js";
 import { truncate } from "./formatting.js";
 
+/** 卡片實際用到的欄位 —— channel 模式沒有 resolve callback。 */
+export type ApprovalCard = Pick<PendingApproval, "id" | "toolName" | "input" | "decisionReason">;
+
 export const ACTION_ALLOW = "approval_allow";
 export const ACTION_ALWAYS = "approval_always";
 export const ACTION_DENY = "approval_deny";
@@ -41,7 +44,7 @@ function inputPreview(input: Record<string, unknown>): string {
  * a human can see what would actually run, so paraphrasing it would defeat
  * the control.
  */
-export function approvalBlocks(approval: PendingApproval): unknown[] {
+export function approvalBlocks(approval: ApprovalCard, allowAlways = true): unknown[] {
   const blocks: unknown[] = [
     section(`:lock: *${approval.toolName}* wants to run`),
     section(inputPreview(approval.input)),
@@ -60,12 +63,17 @@ export function approvalBlocks(approval: PendingApproval): unknown[] {
         text: { type: "plain_text", text: "Allow once" },
         value: approval.id,
       },
-      {
-        type: "button",
-        action_id: ACTION_ALWAYS,
-        text: { type: "plain_text", text: "Always allow" },
-        value: approval.id,
-      },
+      // channel 的權限轉送只有 allow / deny，沒有「永遠允許」。
+      ...(allowAlways
+        ? [
+            {
+              type: "button",
+              action_id: ACTION_ALWAYS,
+              text: { type: "plain_text", text: "Always allow" },
+              value: approval.id,
+            },
+          ]
+        : []),
       {
         type: "button",
         action_id: ACTION_DENY,
@@ -80,7 +88,7 @@ export function approvalBlocks(approval: PendingApproval): unknown[] {
 
 /** Replace the buttons with a record of the decision. */
 export function resolvedApprovalBlocks(
-  approval: PendingApproval,
+  approval: ApprovalCard,
   decision: "allow" | "always" | "deny",
   userId: string,
 ): unknown[] {
